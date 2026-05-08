@@ -2,6 +2,7 @@
 
 namespace Nawasara\Teleport\Livewire\Node\Section;
 
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Log;
 use Livewire\Attributes\Computed;
@@ -152,14 +153,6 @@ class Table extends Component
     public string $connectReason = '';
 
     /**
-     * URL ws yg dikasih ke frontend untuk init terminal session. Set
-     * di confirmConnect() sukses, dipakai oleh JS modal listener untuk
-     * `new WebSocket(url)`.
-     */
-    public string $terminalWsUrl = '';
-    public string $terminalNodeName = '';
-
-    /**
      * Buka modal konfirmasi sebelum admin trigger SSH session ke node.
      * Permission check di sini PLUS di submit handler (defense in depth).
      */
@@ -247,17 +240,38 @@ class Table extends Component
             ticketId: $result['ticket_id'] ?? null,
         );
 
-        // Set state untuk terminal modal + dispatch event ke frontend
-        $this->terminalWsUrl = $result['ws_url'];
-        $this->terminalNodeName = $node;
+        // Stash session info ke cache supaya terminal page (tab baru)
+        // bisa fetch detail tanpa query string yg leak ws_url ke browser
+        // history. Key = ticket_id (UUID v7), TTL 5 menit (selaras
+        // dengan ticket TTL di sidecar).
+        //
+        // Single-use: TerminalController::show() Cache::forget setelah
+        // berhasil baca — refresh tab = ticket sudah dipakai → render
+        // expired page.
+        $ticketId = $result['ticket_id'];
+        Cache::put("teleport:terminal:{$ticketId}", [
+            'ws_url' => $result['ws_url'],
+            'node' => $node,
+            'login' => $login,
+            'target_user' => $username,
+            'expires_at' => $result['expires_at'] ?? null,
+            'user_id' => auth()->id(),    // verify ownership di controller
+        ], now()->addMinutes(5));
+
+        // Build URL terminal page yang akan di-load di tab baru.
+        $terminalUrl = route('nawasara-teleport.terminal.show', ['ticket' => $ticketId]);
 
         $this->dispatch('modal-close:teleport-connect');
+
+        // Dispatch event ke browser. JS listener pre-opened tab kosong
+        // (about:blank) saat user klik submit — sekarang tinggal update
+        // tab.location.href ke terminal page URL.
         $this->dispatch('teleport-terminal-open',
-            url: $result['ws_url'],
+            url: $terminalUrl,
             node: $node,
-            user: $username,
-            login: $login,
         );
+
+        $this->toastSuccess("Terminal {$node} di-buka di tab baru.");
 
         return null;
     }

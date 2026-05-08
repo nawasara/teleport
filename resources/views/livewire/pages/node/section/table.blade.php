@@ -209,180 +209,59 @@
 
         <x-slot:footer>
             <x-nawasara-ui::button color="neutral" variant="outline" @click="$dispatch('close-modal', 'teleport-connect')">Batal</x-nawasara-ui::button>
-            <x-nawasara-ui::button type="submit" form="teleport-connect-form" color="success">
+            {{-- Submit button: SYNC click handler pre-open about:blank di tab
+                 baru sebelum form submit. Reference disimpan di window scope
+                 supaya JS listener (di-script bawah) bisa update URL tab
+                 setelah Livewire response balik dengan terminal page URL.
+                 Tidak pakai noopener,noreferrer di pre-open karena akan bikin
+                 window.open() return null (per HTML spec). Defense in depth:
+                 null out opener setelah URL update di JS listener. --}}
+            <x-nawasara-ui::button
+                type="submit"
+                form="teleport-connect-form"
+                color="success"
+                onclick="window.__nawasaraTeleportTerminalTab = window.open('about:blank', '_blank')">
                 <x-slot:icon><x-lucide-terminal /></x-slot:icon>
                 Connect
             </x-nawasara-ui::button>
         </x-slot:footer>
     </x-nawasara-ui::modal>
 
-    {{-- Modal 2: Terminal session live xterm.js. Ini modal terbesar
-         (hampir full-screen) supaya admin punya cukup viewport untuk
-         actual terminal work. --}}
-    <x-nawasara-ui::modal id="teleport-terminal" maxWidth="3xl"
-        :title="$terminalNodeName ? 'Terminal: '.$terminalNodeName : 'Terminal'">
-        <div wire:ignore class="space-y-3">
-            <div id="teleport-terminal-status" class="text-xs font-mono text-gray-500 dark:text-neutral-400">
-                Initializing...
-            </div>
-            <div id="teleport-terminal-container"
-                class="bg-black rounded-lg overflow-hidden border border-gray-800"
-                style="min-height: 480px; height: 60vh;">
-                {{-- xterm.js akan attach ke div ini saat modal open --}}
-            </div>
-        </div>
+    {{-- JS bridge: open SSH terminal di tab baru.
 
-        <x-slot:footer>
-            <x-nawasara-ui::button color="neutral" variant="outline" @click="$dispatch('close-modal', 'teleport-terminal'); window.dispatchEvent(new CustomEvent('teleport-terminal-disconnect'))">
-                Disconnect & Tutup
-            </x-nawasara-ui::button>
-        </x-slot:footer>
-    </x-nawasara-ui::modal>
+         Pattern popup-blocker safe (sama dengan webmail/cpanel launch-as):
+           1. User klik [Connect] di footer modal — submit button onclick
+              pre-open about:blank (SYNC click context, allowed by browser).
+           2. Tab reference disimpan di window.__nawasaraTeleportTerminalTab
+           3. Form submit → Livewire confirmConnect mint ticket di sidecar
+              + stash session info ke cache via Cache::put().
+           4. Livewire response dispatch event `teleport-terminal-open`
+              dengan { url: route('...terminal.show', ['ticket' => $id]) }.
+           5. JS listener update tab.location.href ke URL terminal page.
+           6. Terminal page (TerminalController::show) fetch session info
+              dari cache, render fullscreen xterm.js + ws connect.
 
-    {{-- xterm.js bridge — load dari CDN saat first render. --}}
-    @once
-        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css" />
-        <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
-        <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
-    @endonce
-
+         Kalau pre-open tab gagal (browser blok meskipun sync click) ATAU
+         user sudah close tab pre-opened → fallback window.open. --}}
     <script>
         document.addEventListener('livewire:init', () => {
-            let term = null;
-            let fitAddon = null;
-            let ws = null;
-            let resizeObserver = null;
-
-            const statusEl = () => document.getElementById('teleport-terminal-status');
-            const containerEl = () => document.getElementById('teleport-terminal-container');
-
-            const setStatus = (msg, cls = '') => {
-                const el = statusEl();
-                if (!el) return;
-                el.textContent = msg;
-                el.className = 'text-xs font-mono ' + (cls || 'text-gray-500 dark:text-neutral-400');
-            };
-
-            const cleanup = () => {
-                if (ws) {
-                    try { ws.close(); } catch (e) { /* ignore */ }
-                    ws = null;
-                }
-                if (resizeObserver) {
-                    try { resizeObserver.disconnect(); } catch (e) { /* ignore */ }
-                    resizeObserver = null;
-                }
-                if (term) {
-                    try { term.dispose(); } catch (e) { /* ignore */ }
-                    term = null;
-                    fitAddon = null;
-                }
-            };
-
-            // Listener: Livewire dispatch event saat ticket ready
             Livewire.on('teleport-terminal-open', (event) => {
                 const payload = Array.isArray(event) ? event[0] : event;
-                const wsUrl = payload?.url;
-                const node = payload?.node || 'unknown';
-                if (!wsUrl) return;
+                const url = payload?.url;
+                if (!url) return;
 
-                // Show terminal modal first — Livewire close bridge yg lain
-                window.dispatchEvent(new CustomEvent('open-modal', {
-                    detail: { id: 'teleport-terminal', loading: false }
-                }));
-
-                // Wait next tick supaya modal DOM ready
-                requestAnimationFrame(() => {
-                    cleanup(); // safety: clean prev state kalau ada
-
-                    const container = containerEl();
-                    if (!container) {
-                        setStatus('Error: terminal container not found in DOM', 'text-red-500');
-                        return;
-                    }
-
-                    // Init xterm
-                    term = new Terminal({
-                        cursorBlink: true,
-                        fontFamily: 'Menlo, Monaco, "Courier New", monospace',
-                        fontSize: 13,
-                        theme: { background: '#000000' },
-                    });
-                    fitAddon = new FitAddon.FitAddon();
-                    term.loadAddon(fitAddon);
-                    term.open(container);
-                    fitAddon.fit();
-                    term.focus();
-
-                    setStatus(`Connecting to ${node}...`);
-
-                    // Open WS
-                    ws = new WebSocket(wsUrl);
-                    ws.binaryType = 'arraybuffer';
-
-                    ws.onopen = () => {
-                        setStatus(`Connected to ${node}`, 'text-emerald-600 dark:text-emerald-400');
-
-                        // Send initial resize so server PTY matches xterm geometry
-                        const sendResize = () => {
-                            if (!ws || ws.readyState !== WebSocket.OPEN) return;
-                            ws.send(JSON.stringify({
-                                type: 'resize',
-                                cols: term.cols,
-                                rows: term.rows,
-                            }));
-                        };
-                        sendResize();
-
-                        // Forward keystrokes ke server (binary frames)
-                        term.onData((data) => {
-                            if (!ws || ws.readyState !== WebSocket.OPEN) return;
-                            ws.send(new TextEncoder().encode(data));
-                        });
-
-                        // Resize observer untuk auto-fit + send window-change
-                        resizeObserver = new ResizeObserver(() => {
-                            if (!fitAddon) return;
-                            try { fitAddon.fit(); } catch (e) { /* ignore */ }
-                            sendResize();
-                        });
-                        resizeObserver.observe(container);
-                    };
-
-                    ws.onmessage = (event) => {
-                        // Server kirim binary stdout/stderr; xterm handle Uint8Array
-                        if (event.data instanceof ArrayBuffer) {
-                            term.write(new Uint8Array(event.data));
-                        } else if (typeof event.data === 'string') {
-                            // Bridge error messages atau notice (text frames)
-                            term.write(event.data);
-                        }
-                    };
-
-                    ws.onerror = () => {
-                        setStatus(`Connection error to ${node}`, 'text-red-500');
-                    };
-
-                    ws.onclose = () => {
-                        setStatus(`Disconnected from ${node}`, 'text-amber-600');
-                        if (term) {
-                            term.write('\r\n\x1b[33m[session closed]\x1b[0m\r\n');
-                        }
-                    };
-                });
-            });
-
-            // Listener: cleanup saat user klik Tutup atau Esc close modal
-            window.addEventListener('teleport-terminal-disconnect', () => {
-                cleanup();
-                setStatus('Disconnected.');
-            });
-
-            // Cleanup juga saat modal di-close lewat overlay click / Esc
-            window.addEventListener('close-modal', (e) => {
-                if (e?.detail === 'teleport-terminal' || e?.detail?.id === 'teleport-terminal') {
-                    cleanup();
+                const tab = window.__nawasaraTeleportTerminalTab;
+                if (tab && !tab.closed) {
+                    tab.location.href = url;
+                    // Defense in depth — null out opener supaya target page
+                    // tidak bisa manipulate window.opener.location.
+                    try { tab.opener = null; } catch (e) { /* cross-origin */ }
+                } else {
+                    // Fallback: tab pre-opened gagal/closed. Pakai noopener
+                    // di sini boleh karena tidak butuh reference balik.
+                    window.open(url, '_blank', 'noopener,noreferrer');
                 }
+                window.__nawasaraTeleportTerminalTab = null;
             });
         });
     </script>
