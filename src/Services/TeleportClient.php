@@ -267,4 +267,80 @@ class TeleportClient
             Cache::forget("nawasara_teleport:list:{$r}");
         }
     }
+
+    // ─── Phase 4: SSH terminal connect flow ─────────────────────────────
+
+    /**
+     * Mint SSH cert + ticket untuk user impersonation di Teleport.
+     *
+     * Flow yang sidecar lakukan saat call ini:
+     *   1. EnsureUser — idempotent create Teleport user matching $user
+     *      (kalau belum exist, auto-create dengan role 'access' + login
+     *      'root'). Username convention: pakai Keycloak username
+     *      (auth()->user()->username).
+     *   2. MintUserCert — generate ed25519 keypair ephemeral + sign via
+     *      Teleport API GenerateUserCerts. Cert TTL pendek (5 menit).
+     *   3. Issue ticket UUID v7 di TicketStore in-memory, attach cert.
+     *   4. Return {ticket_id, ws_path, expires_at}.
+     *
+     * Browser frontend lalu open WS ke `{bridge_url}{ws_path}` untuk
+     * trigger SSH session bridge (bypass HMAC bearer auth — auth-nya
+     * via single-use ticket).
+     *
+     * @return array{
+     *   success: bool,
+     *   ticket_id?: string,
+     *   ws_url?: string,         // full URL siap pakai browser ws.connect
+     *   expires_at?: string,     // RFC3339
+     *   error?: string,
+     * }
+     */
+    public function connect(string $user, string $node, string $login = 'root', int $ttlSeconds = 300): array
+    {
+        if (! $this->isConfigured()) {
+            return ['success' => false, 'error' => 'Vault group teleport belum di-config.'];
+        }
+
+        try {
+            $response = $this->api()
+                ->asJson()
+                ->post('/api/connect', [
+                    'user' => $user,
+                    'node' => $node,
+                    'login' => $login,
+                    'ttl_seconds' => $ttlSeconds,
+                ]);
+        } catch (\Throwable $e) {
+            return ['success' => false, 'error' => 'Tidak bisa hubungi sidecar: '.$e->getMessage()];
+        }
+
+        if (! $response->successful()) {
+            return [
+                'success' => false,
+                'error' => $response->json('error', 'HTTP '.$response->status()),
+            ];
+        }
+
+        $body = $response->json();
+        $ticketId = $body['ticket_id'] ?? null;
+        $wsPath = $body['ws_path'] ?? null;
+
+        if (! $ticketId || ! $wsPath) {
+            return ['success' => false, 'error' => 'Sidecar response missing ticket_id atau ws_path.'];
+        }
+
+        // Build full WS URL — convert http:// ke ws://, https:// ke wss://.
+        // Browser akan konek langsung ke sidecar via URL ini, tanpa proxy
+        // Laravel di tengah (sidecar di-bind 127.0.0.1 di dev, expose via
+        // Nginx proxy_pass di production).
+        $wsBase = preg_replace('/^http(s?):/', 'ws$1:', $this->bridgeUrl());
+        $wsUrl = $wsBase.$wsPath;
+
+        return [
+            'success' => true,
+            'ticket_id' => $ticketId,
+            'ws_url' => $wsUrl,
+            'expires_at' => $body['expires_at'] ?? null,
+        ];
+    }
 }

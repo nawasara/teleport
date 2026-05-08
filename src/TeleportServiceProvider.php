@@ -15,6 +15,7 @@ class TeleportServiceProvider extends ServiceProvider
     {
         $this->loadRoutesFrom(__DIR__.'/../routes/web.php');
         $this->loadViewsFrom(__DIR__.'/../resources/views', 'nawasara-teleport');
+        $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
 
         // Anonymous Blade components — kalau nanti ada di resources/views/components.
         // Phase 1 belum ada, tapi register up-front supaya consumer view bisa
