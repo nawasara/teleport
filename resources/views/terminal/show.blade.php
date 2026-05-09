@@ -3,6 +3,10 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
+    {{-- CSRF token untuk POST reissue endpoint dari JS. Terminal page
+         standalone (bukan extends app layout) jadi meta tag harus
+         di-render di sini sendiri. --}}
+    <meta name="csrf-token" content="{{ csrf_token() }}">
     <title>Terminal: {{ $node }} — Nawasara</title>
 
     {{-- xterm.js v5.5 dari CDN. Kalau di production butuh offline,
@@ -141,6 +145,22 @@
                 <span id="terminal-status" class="status connecting">Connecting...</span>
             </div>
             <div class="actions">
+                {{-- Reconnect button — hidden default, di-show oleh JS saat
+                     ws.onclose. Mint ticket baru via POST /reissue, swap
+                     WebSocket di-place tanpa reload tab. --}}
+                <button type="button" id="btn-reconnect"
+                    title="Buat session SSH baru ke node yang sama (replay alasan)"
+                    style="display: none; background: #052e16; color: #4ade80; border-color: #14532d;">
+                    ↻ Reconnect
+                </button>
+                {{-- Back to Nodes — fallback kalau Reconnect gagal /
+                     window expired. Default hidden, di-show bareng
+                     reconnect button. --}}
+                <button type="button" id="btn-back"
+                    title="Kembali ke halaman Nodes"
+                    style="display: none;">
+                    ← Nodes
+                </button>
                 <button type="button" id="btn-disconnect" title="Tutup koneksi SSH dan tab ini">
                     Disconnect
                 </button>
@@ -156,11 +176,22 @@
         // Pre-encode config JSON di server side. Blade @json directive
         // sometimes mistinterpret bracket notation di script type=
         // application/json context — pakai plain echo lebih aman.
+        //
+        // ticket = current ticket UUID, dipakai JS saat klik [Reconnect]
+        // untuk POST ke /terminal/{ticket}/reissue (Laravel lookup audit
+        // row by ticket_id untuk replay node/login/reason).
+        //
+        // reissue_url = pre-built endpoint URL untuk fetch POST. Tampaknya
+        // redundant dengan ticket, tapi simpan URL utuh supaya JS tidak
+        // perlu hardcode prefix path /nawasara-teleport/...
         $terminalConfig = json_encode([
             'ws_url' => $wsUrl,
             'node' => $node,
             'target_user' => $targetUser,
             'login' => $login,
+            'ticket' => $ticket,
+            'reissue_url' => route('nawasara-teleport.terminal.reissue', ['ticket' => $ticket]),
+            'nodes_url' => url('nawasara-teleport/nodes'),
         ], JSON_UNESCAPED_SLASHES);
     @endphp
     {{-- Bootstrap data — pakai hidden input + JSON parse instead of inline
@@ -170,13 +201,40 @@
     <script>
         (function () {
             const config = JSON.parse(document.getElementById('terminal-config').textContent);
+            const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
             const statusEl = document.getElementById('terminal-status');
             const containerEl = document.getElementById('terminal');
             const disconnectBtn = document.getElementById('btn-disconnect');
+            const reconnectBtn = document.getElementById('btn-reconnect');
+            const backBtn = document.getElementById('btn-back');
+
+            // Mutable state — disengaja deklarasi di luar fungsi supaya
+            // bisa di-update saat reconnect (URL ws baru, ticket baru
+            // setelah reissue, dll).
+            let currentWsUrl = config.ws_url;
+            let currentReissueUrl = config.reissue_url;
+            let currentTicket = config.ticket;
+
+            // Disengaja flag untuk bedakan "user klik Disconnect" (true)
+            // vs "ws drop external" (false). Saat disconnectIntent=true,
+            // ws.onclose tidak show reconnect button — admin minta exit.
+            let disconnectIntent = false;
 
             const setStatus = (text, cls) => {
                 statusEl.textContent = text;
                 statusEl.className = 'status ' + cls;
+            };
+
+            const showReconnect = () => {
+                reconnectBtn.style.display = '';
+                backBtn.style.display = '';
+                disconnectBtn.style.display = 'none';
+            };
+
+            const hideReconnect = () => {
+                reconnectBtn.style.display = 'none';
+                backBtn.style.display = 'none';
+                disconnectBtn.style.display = '';
             };
 
             // Init xterm dengan theme dark + addons (fit + web-links).
@@ -216,7 +274,16 @@
             fitAddon.fit();
             term.focus();
 
-            // === WebSocket bridge ===
+            // term.onData di-attach SEKALI saja (di luar attachWebSocket).
+            // Saat reconnect, ws variable di-update lewat closure — handler
+            // ini auto-pickup ws baru. Kalau di-attach per-connect bakal
+            // double-trigger setelah reconnect.
+            term.onData((data) => {
+                if (!ws || ws.readyState !== WebSocket.OPEN) return;
+                ws.send(new TextEncoder().encode(data));
+            });
+
+            // === WebSocket bridge state ===
             let ws = null;
             let resizeObserver = null;
 
@@ -240,50 +307,120 @@
                 }
             };
 
-            ws = new WebSocket(config.ws_url);
-            ws.binaryType = 'arraybuffer';
+            // attachWebSocket — open ws ke wsUrl, wire events. Bisa di-call
+            // ulang setelah reconnect (cleanup() dulu sebelum re-attach).
+            const attachWebSocket = (wsUrl) => {
+                ws = new WebSocket(wsUrl);
+                ws.binaryType = 'arraybuffer';
 
-            ws.onopen = () => {
-                setStatus('Connected to ' + config.node, 'connected');
-                sendResize(); // initial PTY size
+                ws.onopen = () => {
+                    setStatus('Connected to ' + config.node, 'connected');
+                    hideReconnect();
+                    sendResize(); // initial PTY size
 
-                // Forward keystrokes ke server (binary frames TextEncoder)
-                term.onData((data) => {
-                    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-                    ws.send(new TextEncoder().encode(data));
-                });
+                    // Auto-fit + send window-change saat browser resize.
+                    // Disconnect old observer dulu (kalau ada dari sesi
+                    // sebelumnya yg ws drop) supaya gak double-fire.
+                    if (resizeObserver) {
+                        try { resizeObserver.disconnect(); } catch (e) { /* ignore */ }
+                    }
+                    resizeObserver = new ResizeObserver(() => {
+                        try { fitAddon.fit(); } catch (e) { /* ignore */ }
+                        sendResize();
+                    });
+                    resizeObserver.observe(containerEl);
+                };
 
-                // Auto-fit + send window-change saat browser resize
-                resizeObserver = new ResizeObserver(() => {
-                    try { fitAddon.fit(); } catch (e) { /* ignore */ }
-                    sendResize();
-                });
-                resizeObserver.observe(containerEl);
+                ws.onmessage = (event) => {
+                    if (event.data instanceof ArrayBuffer) {
+                        term.write(new Uint8Array(event.data));
+                    } else if (typeof event.data === 'string') {
+                        // Bridge error / notice (text frames)
+                        term.write(event.data);
+                    }
+                };
+
+                ws.onerror = () => {
+                    setStatus('Connection error', 'disconnected');
+                };
+
+                ws.onclose = () => {
+                    if (disconnectIntent) {
+                        // Admin klik Disconnect — tidak show reconnect.
+                        setStatus('Disconnected', 'disconnected');
+                        term.write('\r\n\x1b[33m[session closed — tab dapat ditutup]\x1b[0m\r\n');
+                        return;
+                    }
+                    // Drop tidak intentional — show reconnect button.
+                    setStatus('Disconnected', 'disconnected');
+                    term.write('\r\n\x1b[33m[session ended — klik Reconnect untuk session baru, atau Disconnect/Nodes]\x1b[0m\r\n');
+                    showReconnect();
+                };
             };
 
-            ws.onmessage = (event) => {
-                if (event.data instanceof ArrayBuffer) {
-                    term.write(new Uint8Array(event.data));
-                } else if (typeof event.data === 'string') {
-                    // Bridge error / notice (text frames)
-                    term.write(event.data);
+            // First connect.
+            attachWebSocket(currentWsUrl);
+
+            // Reconnect button — POST /reissue, replace state, attach ws baru.
+            reconnectBtn.addEventListener('click', async () => {
+                reconnectBtn.disabled = true;
+                setStatus('Reconnecting...', 'connecting');
+                term.write('\r\n\x1b[36m[reconnecting — minting cert baru...]\x1b[0m\r\n');
+
+                try {
+                    const resp = await fetch(currentReissueUrl, {
+                        method: 'POST',
+                        credentials: 'same-origin',
+                        headers: {
+                            'Accept': 'application/json',
+                            'Content-Type': 'application/json',
+                            'X-CSRF-TOKEN': csrfToken,
+                            'X-Requested-With': 'XMLHttpRequest',
+                        },
+                    });
+
+                    const data = await resp.json().catch(() => ({}));
+                    if (!resp.ok) {
+                        const msg = data.message || ('HTTP ' + resp.status);
+                        term.write('\r\n\x1b[31m[reconnect gagal] ' + msg + '\x1b[0m\r\n');
+                        setStatus('Reconnect failed', 'disconnected');
+                        reconnectBtn.disabled = false;
+                        return;
+                    }
+
+                    // Sukses — update state ke ticket baru. URL bar juga
+                    // di-update via pushState supaya kalau admin Ctrl+R,
+                    // landing page-nya match dengan ticket aktif (cache
+                    // session info di Laravel masih valid 5 menit).
+                    currentWsUrl = data.ws_url;
+                    currentTicket = data.ticket_id;
+                    currentReissueUrl = '{{ url('nawasara-teleport/terminal') }}/' + data.ticket_id + '/reissue';
+                    if (data.terminal_url) {
+                        try { window.history.pushState({}, '', data.terminal_url); } catch (e) { /* ignore */ }
+                    }
+
+                    cleanup(); // jaga-jaga walau ws sudah closed
+                    term.write('\x1b[36m[connected — session baru]\x1b[0m\r\n');
+                    attachWebSocket(currentWsUrl);
+                } catch (err) {
+                    term.write('\r\n\x1b[31m[reconnect error] ' + err.message + '\x1b[0m\r\n');
+                    setStatus('Reconnect error', 'disconnected');
+                } finally {
+                    reconnectBtn.disabled = false;
                 }
-            };
+            });
 
-            ws.onerror = () => {
-                setStatus('Connection error', 'disconnected');
-            };
-
-            ws.onclose = () => {
-                setStatus('Disconnected', 'disconnected');
-                term.write('\r\n\x1b[33m[session closed — tab dapat ditutup]\x1b[0m\r\n');
-                cleanup();
-            };
+            // Back to Nodes — kalau admin pilih udahan + balik ke list
+            // node manual (mis. mau ke node yang berbeda).
+            backBtn.addEventListener('click', () => {
+                window.location.href = config.nodes_url;
+            });
 
             // Disconnect button — close ws + close tab.
             // Browser akan block window.close() kalau tab tidak di-spawn
             // via window.open(); fallback: just close ws + show notice.
             disconnectBtn.addEventListener('click', () => {
+                disconnectIntent = true;
                 cleanup();
                 setStatus('Disconnecting...', 'disconnected');
                 try {
@@ -292,12 +429,15 @@
                 // Setelah 500ms kalau tab masih ada (window.close blocked),
                 // navigate ke nodes page sebagai fallback yang reasonable.
                 setTimeout(() => {
-                    window.location.href = '{{ url('nawasara-teleport/nodes') }}';
+                    window.location.href = config.nodes_url;
                 }, 500);
             });
 
             // Cleanup saat tab di-close paksa (Ctrl+W, X button)
-            window.addEventListener('beforeunload', cleanup);
+            window.addEventListener('beforeunload', () => {
+                disconnectIntent = true;
+                cleanup();
+            });
         })();
     </script>
 </body>
