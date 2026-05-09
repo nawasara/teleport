@@ -14,6 +14,9 @@ class TeleportServiceProvider extends ServiceProvider
     public function boot(): void
     {
         $this->loadRoutesFrom(__DIR__.'/../routes/web.php');
+        // Internal API routes — webhook receiver dari sidecar (mis. session-closed).
+        // Stateless, HMAC-authenticated, no web middleware overhead.
+        $this->loadRoutesFrom(__DIR__.'/../routes/api.php');
         $this->loadViewsFrom(__DIR__.'/../resources/views', 'nawasara-teleport');
         $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
 
