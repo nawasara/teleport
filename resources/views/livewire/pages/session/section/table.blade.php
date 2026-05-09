@@ -210,6 +210,12 @@
         @if ($this->detail)
             @php $d = $this->detail; @endphp
             <div class="space-y-4 text-sm">
+                {{-- Grid label/value pairs.
+                     Konvensi color (mirror style "Alasan akses" di bawah):
+                       Label: text-gray-500 / dark:text-neutral-400 (muted)
+                       Value: text-gray-900 / dark:text-neutral-100 (high contrast)
+                     Override khusus: Node accent emerald supaya ketauan
+                     itu identifier utama dalam konteks audit. --}}
                 <div class="grid grid-cols-2 gap-4">
                     <div>
                         <span class="text-gray-500 dark:text-neutral-400">Status:</span>
@@ -225,19 +231,19 @@
                     </div>
                     <div>
                         <span class="text-gray-500 dark:text-neutral-400">Waktu:</span>
-                        <span class="font-medium">{{ \Carbon\Carbon::parse($d->created_at)->format('d M Y H:i:s') }}</span>
+                        <span class="font-medium text-gray-900 dark:text-neutral-100">{{ \Carbon\Carbon::parse($d->created_at)->format('d M Y H:i:s') }}</span>
                     </div>
                     <div>
                         <span class="text-gray-500 dark:text-neutral-400">Admin (Actor):</span>
-                        <span class="font-medium">{{ $d->actor?->name ?? '#'.($d->acted_by_user_id ?? '?') }}</span>
+                        <span class="font-medium text-gray-900 dark:text-neutral-100">{{ $d->actor?->name ?? '#'.($d->acted_by_user_id ?? '?') }}</span>
                     </div>
                     <div>
                         <span class="text-gray-500 dark:text-neutral-400">Durasi:</span>
-                        <span class="font-medium">{{ $fmtDuration($d->duration_seconds) }}</span>
+                        <span class="font-medium text-gray-900 dark:text-neutral-100">{{ $fmtDuration($d->duration_seconds) }}</span>
                     </div>
                     <div>
                         <span class="text-gray-500 dark:text-neutral-400" title="Username yang di-mint di Teleport SSH cert. Untuk admin impersonate cert biasanya = Keycloak username admin sendiri.">Teleport Identity:</span>
-                        <span class="font-mono font-medium">{{ $d->target_user }}</span>
+                        <span class="font-mono font-medium text-gray-900 dark:text-neutral-100">{{ $d->target_user }}</span>
                     </div>
                     <div>
                         <span class="text-gray-500 dark:text-neutral-400">Node:</span>
@@ -245,16 +251,16 @@
                     </div>
                     <div>
                         <span class="text-gray-500 dark:text-neutral-400" title="OS user (Linux) yang di-login di node target. Mis. root, ubuntu, ec2-user.">OS Login:</span>
-                        <span class="font-mono font-medium">{{ $d->login }}</span>
+                        <span class="font-mono font-medium text-gray-900 dark:text-neutral-100">{{ $d->login }}</span>
                     </div>
                     <div>
                         <span class="text-gray-500 dark:text-neutral-400">IP:</span>
-                        <span class="font-mono font-medium">{{ $d->ip ?? '-' }}</span>
+                        <span class="font-mono font-medium text-gray-900 dark:text-neutral-100">{{ $d->ip ?? '-' }}</span>
                     </div>
                     @if ($d->ticket_id)
                         <div class="col-span-2">
                             <span class="text-gray-500 dark:text-neutral-400">Ticket ID:</span>
-                            <span class="font-mono text-xs">{{ $d->ticket_id }}</span>
+                            <span class="font-mono text-xs text-gray-700 dark:text-neutral-300">{{ $d->ticket_id }}</span>
                         </div>
                     @endif
                 </div>
