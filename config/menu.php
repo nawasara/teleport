@@ -30,6 +30,13 @@ return [
                 'permission' => 'teleport.role.view',
                 'navigate' => true,
             ],
+            [
+                'label' => 'SSH Sessions',
+                'icon' => 'lucide-terminal',
+                'url' => url($prefix.'/sessions'),
+                'permission' => 'teleport.session.view',
+                'navigate' => true,
+            ],
         ],
     ],
 ];

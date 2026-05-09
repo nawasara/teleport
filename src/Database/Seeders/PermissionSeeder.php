@@ -22,6 +22,11 @@ class PermissionSeeder extends Seeder
             // bukan default ke semua admin.
             'teleport.ssh.connect',
 
+            // Phase 4+: Read-only audit log (siapa admin SSH ke node mana,
+            // kapan, alasannya). Terpisah dari teleport.ssh.connect supaya
+            // bisa di-grant ke compliance reviewer tanpa kasih akses execute.
+            'teleport.session.view',
+
             // Phase 2+: write operations (kalau eventually expose ke Laravel)
             // 'teleport.user.manage',
             // 'teleport.role.manage',

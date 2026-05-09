@@ -4,6 +4,7 @@ use Illuminate\Support\Facades\Route;
 use Nawasara\Teleport\Http\Controllers\TerminalController;
 use Nawasara\Teleport\Livewire\Node\Index as NodeIndex;
 use Nawasara\Teleport\Livewire\Role\Index as RoleIndex;
+use Nawasara\Teleport\Livewire\Session\Index as SessionIndex;
 use Nawasara\Teleport\Livewire\User\Index as UserIndex;
 use Spatie\Permission\Middleware\PermissionMiddleware;
 
@@ -19,6 +20,13 @@ Route::middleware(['web', 'auth'])->prefix('nawasara-teleport')->group(function 
     Route::get('roles', RoleIndex::class)
         ->middleware(PermissionMiddleware::using('teleport.role.view'))
         ->name('nawasara-teleport.role.index');
+
+    // SSH session audit log — read-only audit trail dari Phase 4 launches.
+    // Permission terpisah dari teleport.ssh.connect karena audit reviewer
+    // (mis. internal compliance) butuh view tanpa harus bisa execute.
+    Route::get('sessions', SessionIndex::class)
+        ->middleware(PermissionMiddleware::using('teleport.session.view'))
+        ->name('nawasara-teleport.session.index');
 
     // SSH terminal — fullscreen page di tab baru. Browser redirect ke
     // sini setelah Livewire confirmConnect mint ticket di sidecar.
