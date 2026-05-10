@@ -20,10 +20,15 @@ class TeleportServiceProvider extends ServiceProvider
         $this->loadViewsFrom(__DIR__.'/../resources/views', 'nawasara-teleport');
         $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
 
-        // Anonymous Blade components — kalau nanti ada di resources/views/components.
-        // Phase 1 belum ada, tapi register up-front supaya consumer view bisa
-        // langsung pakai <x-nawasara-teleport::xxx> tanpa modify ServiceProvider lagi.
-        Blade::anonymousComponentPath(__DIR__.'/../resources/views/components', 'nawasara-teleport');
+        // Anonymous Blade components — registered only if the directory
+        // exists. Eagerly registering a missing path crashes `view:cache`
+        // because Laravel's ViewCacheCommand uses Symfony Finder to scan
+        // every registered view path on boot, and Finder throws
+        // DirectoryNotFoundException for missing roots.
+        // Add components/ later and they'll auto-register on next boot.
+        if (is_dir(__DIR__.'/../resources/views/components')) {
+            Blade::anonymousComponentPath(__DIR__.'/../resources/views/components', 'nawasara-teleport');
+        }
 
         $this->registerLivewire();
     }
