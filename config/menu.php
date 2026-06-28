@@ -6,6 +6,7 @@ return [
     [
         'label' => 'Teleport',
         'icon' => 'lucide-server',
+        'group' => 'Keamanan',
         'url' => '',
         'permission' => 'teleport.node.view',
         'submenu' => [
