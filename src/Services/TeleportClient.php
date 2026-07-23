@@ -70,6 +70,31 @@ class TeleportClient
     }
 
     /**
+     * Base URL yang dipakai BROWSER untuk buka websocket ke sidecar.
+     *
+     * Beda dari bridgeUrl(): bridgeUrl() adalah alamat server-to-server
+     * (Laravel → sidecar, mis. http://nawasara-teleport-bridge:9181 di Docker
+     * network internal). Browser TIDAK bisa reach itu — hostname internal +
+     * port tak terekspos, dan halaman HTTPS memblokir ws:// (mixed content).
+     *
+     * Kalau `public_ws_url` di-set di Vault (mis. wss://host/teleport-ws),
+     * itu yang dipakai. Fallback ke bridge_url supaya dev (sidecar di
+     * 127.0.0.1:9181, sama untuk Laravel & browser) tetap jalan tanpa config
+     * tambahan.
+     */
+    protected function publicWsBase(): string
+    {
+        $public = trim((string) Vault::get(self::VAULT_GROUP, 'public_ws_url'));
+
+        if ($public !== '') {
+            return rtrim($public, '/');
+        }
+
+        // Fallback: turunkan dari bridge_url (dev / co-located setup).
+        return preg_replace('/^http(s?):/', 'ws$1:', $this->bridgeUrl());
+    }
+
+    /**
      * Compute bearer token = hmac_sha256(secret, ""). Match sidecar
      * verification logic di internal/auth/hmac.go.
      *
@@ -329,12 +354,11 @@ class TeleportClient
             return ['success' => false, 'error' => 'Sidecar response missing ticket_id atau ws_path.'];
         }
 
-        // Build full WS URL — convert http:// ke ws://, https:// ke wss://.
-        // Browser akan konek langsung ke sidecar via URL ini, tanpa proxy
-        // Laravel di tengah (sidecar di-bind 127.0.0.1 di dev, expose via
-        // Nginx proxy_pass di production).
-        $wsBase = preg_replace('/^http(s?):/', 'ws$1:', $this->bridgeUrl());
-        $wsUrl = $wsBase.$wsPath;
+        // Build full WS URL untuk BROWSER. publicWsBase() pakai public_ws_url
+        // (mis. wss://host/teleport-ws) kalau di-set — bukan bridge_url yang
+        // internal Docker + insecure ws:// yang diblokir browser HTTPS.
+        // Fallback ke bridge_url untuk dev co-located.
+        $wsUrl = $this->publicWsBase().$wsPath;
 
         return [
             'success' => true,
