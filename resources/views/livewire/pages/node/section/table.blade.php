@@ -136,12 +136,24 @@
                                 @if ($node['online'] ?? false)
                                     {{-- Connect button: terminal browser-based dengan auto-login
                                          via Teleport cert impersonation. Disabled kalau node offline
-                                         (toh hit-nya bakal fail di sidecar). --}}
+                                         (toh hit-nya bakal fail di sidecar).
+
+                                         wire:target di-set EKSPLISIT dengan argumen node supaya
+                                         cuma tombol node INI yang loading/disabled saat diklik —
+                                         bukan semua tombol Connect. Tanpa argumen, auto-loading
+                                         button component pakai target "openConnect" (nama action
+                                         saja) → semua baris ter-trigger bersamaan. --}}
+                                    @php $nodeHost = $node['hostname'] ?? ''; @endphp
                                     <x-nawasara-ui::button
                                         size="sm"
                                         color="success"
-                                        wire:click="openConnect('{{ addslashes($node['hostname'] ?? '') }}')">
-                                        <x-slot:icon><x-lucide-terminal class="size-4" /></x-slot:icon>
+                                        wire:click="openConnect('{{ addslashes($nodeHost) }}')"
+                                        wire:target="openConnect('{{ addslashes($nodeHost) }}')"
+                                        wire:loading.attr="disabled">
+                                        <x-slot:icon>
+                                            <x-lucide-terminal class="size-4" wire:loading.remove wire:target="openConnect('{{ addslashes($nodeHost) }}')" />
+                                            <x-lucide-loader-circle class="size-4 animate-spin" wire:loading wire:target="openConnect('{{ addslashes($nodeHost) }}')" />
+                                        </x-slot:icon>
                                         Connect
                                     </x-nawasara-ui::button>
                                 @else
@@ -189,21 +201,28 @@
                 </div>
             </div>
 
-            <x-nawasara-ui::form.input label="Login user di node" wire:model="connectLogin"
-                useError errorVariable="connectLogin" />
-            <p class="text-xs text-gray-500 dark:text-neutral-400 -mt-2">Default: root. Override hanya kalau Teleport user kamu punya trait login lain di server target.</p>
+            <div>
+                <x-nawasara-ui::form.input label="Login User Di Node" wire:model="connectLogin"
+                    useError errorVariable="connectLogin" />
+                <p class="text-xs text-gray-500 dark:text-neutral-400 mt-1.5">Default: root. Override hanya kalau Teleport user kamu punya trait login lain di server target.</p>
+            </div>
 
             <div>
-                <x-nawasara-ui::form.label>
-                    Alasan akses <span class="text-red-500">*</span>
+                {{-- Label dipisah supaya bisa tampilkan bintang wajib —
+                     form.textarea meneruskan `required` sebagai atribut HTML
+                     saja, tidak render tanda *. --}}
+                <x-nawasara-ui::form.label class="mb-1">
+                    Alasan Akses <span class="text-red-500">*</span>
                 </x-nawasara-ui::form.label>
-                <textarea wire:model="connectReason" rows="3"
-                    class="block w-full rounded-lg border-gray-200 dark:bg-neutral-800 dark:border-neutral-700 dark:text-neutral-200 text-sm focus:border-emerald-600 focus:ring-emerald-600"
-                    placeholder="Contoh: Investigate disk full alarm di / partition setelah cron backup"></textarea>
+                <x-nawasara-ui::form.textarea
+                    wire:model="connectReason"
+                    :rows="3"
+                    required
+                    placeholder="Contoh: Investigate disk full alarm di / partition setelah cron backup"
+                    hint="Minimal 10 karakter. Spesifik supaya audit trail actionable." />
                 @error('connectReason')
                     <p class="text-xs text-red-600 dark:text-red-400 mt-1">{{ $message }}</p>
                 @enderror
-                <p class="text-xs text-gray-500 dark:text-neutral-400 mt-1">Minimal 10 karakter. Spesifik supaya audit trail actionable.</p>
             </div>
         </form>
 
@@ -220,9 +239,15 @@
                 type="submit"
                 form="teleport-connect-form"
                 color="success"
+                wire:target="confirmConnect"
+                wire:loading.attr="disabled"
                 onclick="window.__nawasaraTeleportTerminalTab = window.open('about:blank', '_blank')">
-                <x-slot:icon><x-lucide-terminal /></x-slot:icon>
-                Connect
+                <x-slot:icon>
+                    <x-lucide-terminal wire:loading.remove wire:target="confirmConnect" />
+                    <x-lucide-loader-circle class="animate-spin" wire:loading wire:target="confirmConnect" />
+                </x-slot:icon>
+                <span wire:loading.remove wire:target="confirmConnect">Connect</span>
+                <span wire:loading wire:target="confirmConnect">Menyambungkan…</span>
             </x-nawasara-ui::button>
         </x-slot:footer>
     </x-nawasara-ui::modal>
